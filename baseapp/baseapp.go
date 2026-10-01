@@ -1037,9 +1037,11 @@ func (app *BaseApp) runTx(mode execMode, txBytes []byte, tx sdk.Tx) (gInfo sdk.G
 					return gInfo, nil, anteEvents, err
 				}
 			}
-			msCache.Write()
 			if messageScope != nil {
+				mustCompleteCache(msCache.Write)
 				mustCompleteCache(messageScope.Adopt)
+			} else {
+				msCache.Write()
 			}
 		}
 
