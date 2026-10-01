@@ -799,7 +799,8 @@ func (app *BaseApp) internalFinalizeBlock(ctx context.Context, req *abci.Request
 	// NOTE: Not all raw transactions may adhere to the sdk.Tx interface, e.g.
 	// vote extensions, so skip those.
 	txResults := make([]*abci.ExecTxResult, 0, len(req.Txs))
-	for _, rawTx := range req.Txs {
+	for txIndex, rawTx := range req.Txs {
+		app.finalizeBlockState.SetContext(app.finalizeBlockState.Context().WithValue(transactionIndexKey{}, uint32(txIndex)))
 		var response *abci.ExecTxResult
 
 		if _, err := app.txDecoder(rawTx); err == nil {
@@ -832,6 +833,7 @@ func (app *BaseApp) internalFinalizeBlock(ctx context.Context, req *abci.Request
 		app.finalizeBlockState.ms = app.finalizeBlockState.ms.SetTracingContext(nil).(storetypes.CacheMultiStore)
 	}
 
+	app.finalizeBlockState.SetContext(app.finalizeBlockState.Context().WithValue(transactionIndexKey{}, nil))
 	endBlock, err := app.endBlock(app.finalizeBlockState.Context())
 	if err != nil {
 		return nil, err
