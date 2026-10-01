@@ -79,6 +79,7 @@ type Store struct {
 	listeners         map[types.StoreKey]*types.MemoryListener
 	metrics           metrics.StoreMetrics
 	commitHeader      cmtproto.Header
+	stagedMetadata    *stagedCommitMetadata
 }
 
 var (
@@ -467,6 +468,8 @@ func (rs *Store) LastCommitID() types.CommitID {
 
 // Commit implements Committer/CommitStore.
 func (rs *Store) Commit() types.CommitID {
+	metadata := rs.stagedMetadata
+	rs.stagedMetadata = nil
 	var previousHeight, version int64
 	if rs.lastCommitInfo.GetVersion() == 0 && rs.initialVersion > 1 {
 		// This case means that no commit has been made in the store, we
@@ -486,9 +489,12 @@ func (rs *Store) Commit() types.CommitID {
 		rs.logger.Debug("commit header and version mismatch", "header_height", rs.commitHeader.Height, "version", version)
 	}
 
+	if metadata != nil && metadata.height != version {
+		panic(fmt.Errorf("commit metadata height %d differs from SDK decision %d", metadata.height, version))
+	}
 	rs.lastCommitInfo = commitStores(version, rs.stores, rs.removalMap)
 	rs.lastCommitInfo.Timestamp = rs.commitHeader.Time
-	defer rs.flushMetadata(rs.db, version, rs.lastCommitInfo)
+	defer rs.flushMetadataBatch(rs.db, version, rs.lastCommitInfo, metadata)
 
 	// remove remnants of removed stores
 	for sk := range rs.removalMap {
@@ -1120,6 +1126,10 @@ func (rs *Store) GetCommitInfo(ver int64) (*types.CommitInfo, error) {
 }
 
 func (rs *Store) flushMetadata(db dbm.DB, version int64, cInfo *types.CommitInfo) {
+	rs.flushMetadataBatch(db, version, cInfo, nil)
+}
+
+func (rs *Store) flushMetadataBatch(db dbm.DB, version int64, cInfo *types.CommitInfo, metadata *stagedCommitMetadata) {
 	rs.logger.Debug("flushing metadata", "height", version)
 	batch := db.NewBatch()
 	defer func() {
@@ -1133,6 +1143,11 @@ func (rs *Store) flushMetadata(db dbm.DB, version int64, cInfo *types.CommitInfo
 	}
 
 	flushLatestVersion(batch, version)
+	if metadata != nil {
+		if err := batch.Set(metadata.key, metadata.value); err != nil {
+			panic(fmt.Errorf("error staging commit metadata: %w", err))
+		}
+	}
 
 	if err := batch.WriteSync(); err != nil {
 		panic(fmt.Errorf("error on batch write %w", err))
