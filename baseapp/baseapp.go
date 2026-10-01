@@ -987,7 +987,7 @@ func (app *BaseApp) runTx(mode execMode, txBytes []byte, tx sdk.Tx) (gInfo sdk.G
 		if hookErr != nil {
 			return gInfo, nil, anteEvents, hookErr
 		}
-		if scope == nil || boundCtx.IsZero() {
+		if boundCtx.IsZero() || (scope == nil && mode != execModeCheck && mode != execModeReCheck) {
 			panic(FatalCachePanic{Cause: "message cache hook returned an invalid binding"})
 		}
 		runMsgCtx, messageScope = boundCtx, scope
