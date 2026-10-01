@@ -76,9 +76,10 @@ type BaseApp struct {
 	txDecoder         sdk.TxDecoder // unmarshal []byte into sdk.Tx
 	txEncoder         sdk.TxEncoder // marshal sdk.Tx into []byte
 
-	mempool     mempool.Mempool // application side mempool
-	anteHandler sdk.AnteHandler // ante handler for fee and auth
-	postHandler sdk.PostHandler // post handler, optional
+	mempool          mempool.Mempool // application side mempool
+	anteHandler      sdk.AnteHandler // ante handler for fee and auth
+	postHandler      sdk.PostHandler // post handler, optional
+	messageCacheHook MessageCacheHook
 
 	checkTxHandler     sdk.CheckTxHandler             // ABCI CheckTx handler
 	initChainer        sdk.InitChainer                // ABCI InitChain handler
@@ -858,6 +859,9 @@ func (app *BaseApp) runTx(mode execMode, txBytes []byte, tx sdk.Tx) (gInfo sdk.G
 
 	defer func() {
 		if r := recover(); r != nil {
+			if _, fatal := r.(interface{ FatalExecution() }); fatal {
+				panic(r)
+			}
 			recoveryMW := newOutOfGasRecoveryMiddleware(gasWanted, ctx, app.runTxRecoveryMiddleware)
 			err, result = processRecovery(r, recoveryMW), nil
 			ctx.Logger().Error("panic recovered in runTx", "err", err)
@@ -974,6 +978,20 @@ func (app *BaseApp) runTx(mode execMode, txBytes []byte, tx sdk.Tx) (gInfo sdk.G
 	// in case message processing fails. At this point, the MultiStore
 	// is a branch of a branch.
 	runMsgCtx, msCache := app.cacheTxContext(ctx, txBytes)
+	var messageScope MessageCacheScope
+	if app.messageCacheHook != nil {
+		boundCtx, scope, hookErr := app.messageCacheHook(ctx, runMsgCtx, messageCacheMode(mode))
+		if scope != nil {
+			defer mustCompleteCache(scope.Abort)
+		}
+		if hookErr != nil {
+			return gInfo, nil, anteEvents, hookErr
+		}
+		if scope == nil || boundCtx.IsZero() {
+			panic(FatalCachePanic{Cause: "message cache hook returned an invalid binding"})
+		}
+		runMsgCtx, messageScope = boundCtx, scope
+	}
 
 	// Attempt to execute all messages and only update state if all messages pass
 	// and we're in DeliverTx. Note, runMsgs will never return a reference to a
@@ -1014,7 +1032,15 @@ func (app *BaseApp) runTx(mode execMode, txBytes []byte, tx sdk.Tx) (gInfo sdk.G
 			// When block gas exceeds, it'll panic and won't commit the cached store.
 			consumeBlockGas()
 
+			if messageScope != nil {
+				if err = messageScope.PrepareAdopt(); err != nil {
+					return gInfo, nil, anteEvents, err
+				}
+			}
 			msCache.Write()
+			if messageScope != nil {
+				mustCompleteCache(messageScope.Adopt)
+			}
 		}
 
 		if len(anteEvents) > 0 && (mode == execModeFinalize || mode == execModeSimulate) {
