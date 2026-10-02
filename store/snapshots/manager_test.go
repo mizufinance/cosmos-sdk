@@ -2,6 +2,7 @@ package snapshots_test
 
 import (
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -312,5 +313,50 @@ func TestExtensionPreparationFailureClearsManagerReservation(t *testing.T) {
 	case <-extension.released:
 	default:
 		t.Fatal("successful snapshot did not release its capture")
+	}
+}
+
+type requiredExtension struct {
+	*extSnapshotter
+	restored atomic.Int32
+}
+
+func (*requiredExtension) RequiredInSnapshot() bool { return true }
+func (e *requiredExtension) RestoreExtension(h uint64, f uint32, read types.ExtensionPayloadReader) error {
+	e.restored.Add(1)
+	return e.extSnapshotter.RestoreExtension(h, f, read)
+}
+func TestRestoreRequiresNativeExtensionExactlyOnce(t *testing.T) {
+	for _, count := range []int{0, 1, 2} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			store := setupStore(t)
+			manager := snapshots.NewManager(store, opts, &mockSnapshotter{prunedHeights: make(map[int64]struct{})}, nil, log.NewNopLogger())
+			ext := &requiredExtension{extSnapshotter: newExtSnapshotter(0)}
+			require.NoError(t, manager.RegisterExtensions(ext))
+			extensions := make([]types.ExtensionSnapshotter, count)
+			for i := range extensions {
+				extensions[i] = newExtSnapshotter(1)
+			}
+			chunks := snapshotItems([][]byte{{1, 2, 3}}, extensions...)
+			require.NoError(t, manager.Restore(types.Snapshot{Height: 3, Format: types.CurrentFormat, Chunks: uint32(len(chunks)), Metadata: types.Metadata{ChunkHashes: checksums(chunks)}}))
+			var err error
+			for _, chunk := range chunks {
+				_, err = manager.RestoreChunk(chunk)
+				if err != nil {
+					break
+				}
+			}
+			switch count {
+			case 0:
+				require.ErrorContains(t, err, "required extension mock is missing")
+				require.EqualValues(t, 0, ext.restored.Load())
+			case 1:
+				require.NoError(t, err)
+				require.EqualValues(t, 1, ext.restored.Load())
+			case 2:
+				require.ErrorContains(t, err, "duplicate extension mock")
+				require.EqualValues(t, 1, ext.restored.Load(), "second occurrence must not repeat native restore")
+			}
+		})
 	}
 }

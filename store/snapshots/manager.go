@@ -399,12 +399,17 @@ func (m *Manager) doRestoreSnapshot(snapshot types.Snapshot, chChunks <-chan io.
 		return errorsmod.Wrap(err, "multistore restore")
 	}
 
+	seen := make(map[string]bool, len(m.extensions))
 	for nextItem.Item != nil {
 
 		metadata := nextItem.GetExtension()
 		if metadata == nil {
 			return errorsmod.Wrapf(storetypes.ErrLogic, "unknown snapshot item %T", nextItem.Item)
 		}
+		if seen[metadata.Name] {
+			return errorsmod.Wrapf(storetypes.ErrLogic, "duplicate extension %s", metadata.Name)
+		}
+		seen[metadata.Name] = true
 		extension, ok := m.extensions[metadata.Name]
 		if !ok {
 			return errorsmod.Wrapf(storetypes.ErrLogic, "unknown extension snapshotter %s", metadata.Name)
@@ -419,6 +424,11 @@ func (m *Manager) doRestoreSnapshot(snapshot types.Snapshot, chChunks <-chan io.
 
 		if nextItem.GetExtensionPayload() != nil {
 			return errorsmod.Wrapf(err, "extension %s don't exhausted payload stream", metadata.Name)
+		}
+	}
+	for name, extension := range m.extensions {
+		if required, ok := extension.(types.RequiredExtensionSnapshotter); ok && required.RequiredInSnapshot() && !seen[name] {
+			return errorsmod.Wrapf(storetypes.ErrLogic, "required extension %s is missing", name)
 		}
 	}
 	return nil

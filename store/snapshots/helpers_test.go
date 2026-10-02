@@ -63,7 +63,7 @@ func readChunks(chunks <-chan io.ReadCloser) [][]byte {
 }
 
 // snapshotItems serialize a array of bytes as SnapshotItem_ExtensionPayload, and return the chunks.
-func snapshotItems(items [][]byte, ext snapshottypes.ExtensionSnapshotter) [][]byte {
+func snapshotItems(items [][]byte, extensions ...snapshottypes.ExtensionSnapshotter) [][]byte {
 	// copy the same parameters from the code
 	snapshotChunkSize := uint64(10e6)
 	snapshotBufferSize := int(snapshotChunkSize)
@@ -77,18 +77,20 @@ func snapshotItems(items [][]byte, ext snapshottypes.ExtensionSnapshotter) [][]b
 		for _, item := range items {
 			_ = snapshottypes.WriteExtensionPayload(protoWriter, item)
 		}
-		// write extension metadata
-		_ = protoWriter.WriteMsg(&snapshottypes.SnapshotItem{
-			Item: &snapshottypes.SnapshotItem_Extension{
-				Extension: &snapshottypes.SnapshotExtensionMeta{
-					Name:   ext.SnapshotName(),
-					Format: ext.SnapshotFormat(),
+		for _, ext := range extensions {
+			// write extension metadata
+			_ = protoWriter.WriteMsg(&snapshottypes.SnapshotItem{
+				Item: &snapshottypes.SnapshotItem_Extension{
+					Extension: &snapshottypes.SnapshotExtensionMeta{
+						Name:   ext.SnapshotName(),
+						Format: ext.SnapshotFormat(),
+					},
 				},
-			},
-		})
-		_ = ext.SnapshotExtension(0, func(payload []byte) error {
-			return snapshottypes.WriteExtensionPayload(protoWriter, payload)
-		})
+			})
+			_ = ext.SnapshotExtension(0, func(payload []byte) error {
+				return snapshottypes.WriteExtensionPayload(protoWriter, payload)
+			})
+		}
 		_ = protoWriter.Close()
 		_ = bufWriter.Flush()
 		_ = chunkWriter.Close()

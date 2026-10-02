@@ -61,3 +61,9 @@ type ExtensionSnapshotter interface {
 type ExtensionSnapshotPreparer interface {
 	PrepareSnapshot(height uint64) (release func(), err error)
 }
+
+// RequiredExtensionSnapshotter declares state that must accompany the SDK
+// snapshot. Restore cannot succeed when this extension is absent.
+type RequiredExtensionSnapshotter interface {
+	RequiredInSnapshot() bool
+}
