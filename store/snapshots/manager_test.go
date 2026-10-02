@@ -2,7 +2,9 @@ package snapshots_test
 
 import (
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	db "github.com/cosmos/cosmos-db"
 	"github.com/stretchr/testify/assert"
@@ -255,4 +257,60 @@ func TestManager_TakeError(t *testing.T) {
 
 	_, err = manager.Create(1)
 	require.Error(t, err)
+}
+
+type preparedExtension struct {
+	*extSnapshotter
+	prepared atomic.Int32
+	released chan struct{}
+	finish   chan struct{}
+	failure  error
+}
+
+func (e *preparedExtension) PrepareSnapshot(uint64) (func(), error) {
+	e.prepared.Add(1)
+	if e.failure != nil {
+		return nil, e.failure
+	}
+	return func() { close(e.released) }, nil
+}
+func (e *preparedExtension) SnapshotExtension(height uint64, writer types.ExtensionPayloadWriter) error {
+	if e.finish != nil {
+		<-e.finish
+	}
+	return e.extSnapshotter.SnapshotExtension(height, writer)
+}
+func TestExtensionPreparationReservesBeforeAutomaticSnapshotAndReleases(t *testing.T) {
+	store := setupStore(t)
+	base := &mockSnapshotter{prunedHeights: make(map[int64]struct{})}
+	extension := &preparedExtension{extSnapshotter: newExtSnapshotter(1), released: make(chan struct{}), finish: make(chan struct{})}
+	manager := snapshots.NewManager(store, types.NewSnapshotOptions(1, 0), base, nil, log.NewNopLogger())
+	require.NoError(t, manager.RegisterExtensions(extension))
+	manager.SnapshotIfApplicable(5)
+	require.EqualValues(t, 1, extension.prepared.Load(), "preparation must finish synchronously before Commit can advance")
+	_, err := manager.Create(6)
+	require.Error(t, err, "the same existing manager reservation must exclude competing snapshots")
+	close(extension.finish)
+	select {
+	case <-extension.released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("prepared native boundary was not released")
+	}
+}
+func TestExtensionPreparationFailureClearsManagerReservation(t *testing.T) {
+	store := setupStore(t)
+	base := &mockSnapshotter{prunedHeights: make(map[int64]struct{})}
+	extension := &preparedExtension{extSnapshotter: newExtSnapshotter(1), released: make(chan struct{}), failure: errors.New("capture failed")}
+	manager := snapshots.NewManager(store, types.NewSnapshotOptions(1, 0), base, nil, log.NewNopLogger())
+	require.NoError(t, manager.RegisterExtensions(extension))
+	_, err := manager.Create(5)
+	require.ErrorContains(t, err, "capture failed")
+	extension.failure = nil
+	_, err = manager.Create(5)
+	require.NoError(t, err)
+	select {
+	case <-extension.released:
+	default:
+		t.Fatal("successful snapshot did not release its capture")
+	}
 }

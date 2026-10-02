@@ -54,3 +54,10 @@ type ExtensionSnapshotter interface {
 	// the payload reader returns `io.EOF` when reached the extension boundaries.
 	RestoreExtension(height uint64, format uint32, payloadReader ExtensionPayloadReader) error
 }
+
+// ExtensionSnapshotPreparer optionally reserves an extension's matched state
+// synchronously before snapshot streaming starts. Release is called after the
+// stream finishes or fails. It must not perform consensus writes.
+type ExtensionSnapshotPreparer interface {
+	PrepareSnapshot(height uint64) (release func(), err error)
+}

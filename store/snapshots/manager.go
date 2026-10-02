@@ -163,28 +163,59 @@ func (m *Manager) Create(height uint64) (*types.Snapshot, error) {
 	if m == nil {
 		return nil, errorsmod.Wrap(storetypes.ErrLogic, "no snapshot store configured")
 	}
-
 	defer m.multistore.PruneSnapshotHeight(int64(height))
-
-	err := m.begin(opSnapshot)
-	if err != nil {
+	if err := m.begin(opSnapshot); err != nil {
 		return nil, err
 	}
 	defer m.end()
+	release, err := m.prepareSnapshot(height)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return m.createReserved(height)
+}
 
+// prepareSnapshot runs under the existing operation reservation, before either
+// native mutation or asynchronous SDK snapshot streaming can advance.
+func (m *Manager) prepareSnapshot(height uint64) (func(), error) {
 	latest, err := m.store.GetLatest()
 	if err != nil {
 		return nil, errorsmod.Wrap(err, "failed to examine latest snapshot")
 	}
 	if latest != nil && latest.Height >= height {
-		return nil, errorsmod.Wrapf(storetypes.ErrConflict,
-			"a more recent snapshot already exists at height %v", latest.Height)
+		return nil, errorsmod.Wrapf(storetypes.ErrConflict, "a more recent snapshot already exists at height %v", latest.Height)
 	}
+	var releases []func()
+	release := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+	prepared := false
+	defer func() {
+		if !prepared {
+			release()
+		}
+	}()
+	for _, name := range m.sortedExtensionNames() {
+		if preparer, ok := m.extensions[name].(types.ExtensionSnapshotPreparer); ok {
+			cleanup, err := preparer.PrepareSnapshot(height)
+			if err != nil {
+				return nil, errorsmod.Wrapf(err, "prepare snapshot extension %s", name)
+			}
+			if cleanup != nil {
+				releases = append(releases, cleanup)
+			}
+		}
+	}
+	prepared = true
+	return release, nil
+}
 
-	// Spawn goroutine to generate snapshot chunks and pass their io.ReadClosers through a channel
+func (m *Manager) createReserved(height uint64) (*types.Snapshot, error) {
 	ch := make(chan io.ReadCloser)
 	go m.createSnapshot(height, ch)
-
 	return m.store.Save(height, types.CurrentFormat, ch)
 }
 
@@ -511,8 +542,23 @@ func (m *Manager) SnapshotIfApplicable(height int64) {
 		m.logger.Debug("snapshot is skipped", "height", height)
 		return
 	}
-	// start the routine after need to create a snapshot
-	go m.snapshot(height)
+	if height <= 0 {
+		m.logger.Error("snapshot height must be positive", "height", height)
+		return
+	}
+	if err := m.begin(opSnapshot); err != nil {
+		m.logger.Debug("snapshot is skipped", "height", height, "err", err)
+		return
+	}
+	release, err := m.prepareSnapshot(uint64(height))
+	if err != nil {
+		m.end()
+		m.multistore.PruneSnapshotHeight(height)
+		m.logger.Error("failed to prepare state snapshot", "height", height, "err", err)
+		return
+	}
+	// Reservation and extension preparation complete before Commit returns.
+	go m.snapshot(height, release)
 }
 
 // shouldTakeSnapshot returns true is snapshot should be taken at height.
@@ -520,7 +566,7 @@ func (m *Manager) shouldTakeSnapshot(height int64) bool {
 	return m.opts.Interval > 0 && uint64(height)%m.opts.Interval == 0
 }
 
-func (m *Manager) snapshot(height int64) {
+func (m *Manager) snapshot(height int64, release func()) {
 	m.logger.Info("creating state snapshot", "height", height)
 
 	if height <= 0 {
@@ -528,7 +574,12 @@ func (m *Manager) snapshot(height int64) {
 		return
 	}
 
-	snapshot, err := m.Create(uint64(height))
+	snapshot, err := func() (*types.Snapshot, error) {
+		defer m.multistore.PruneSnapshotHeight(height)
+		defer m.end()
+		defer release()
+		return m.createReserved(uint64(height))
+	}()
 	if err != nil {
 		m.logger.Error("failed to create state snapshot", "height", height, "err", err)
 		return
