@@ -1,6 +1,7 @@
 package baseapp
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -402,4 +403,11 @@ func (app *BaseApp) SetMsgServiceRouter(msgServiceRouter *MsgServiceRouter) {
 // SetGRPCQueryRouter sets the GRPCQueryRouter of the BaseApp.
 func (app *BaseApp) SetGRPCQueryRouter(grpcQueryRouter *GRPCQueryRouter) {
 	app.grpcQueryRouter = grpcQueryRouter
+}
+
+// SetQueryBoundaryHook gates public ABCI and gRPC reads after resolving their
+// SDK height. Internal query contexts (for example snapshot reservation) are
+// deliberately not gated, so Commit can acknowledge before materialization.
+func (app *BaseApp) SetQueryBoundaryHook(hook func(context.Context, int64) error) {
+	app.queryBoundaryHook = hook
 }

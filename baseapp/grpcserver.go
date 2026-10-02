@@ -59,6 +59,15 @@ func (app *BaseApp) RegisterGRPCServerWithSkipCheckHeader(server gogogrpc.Server
 			}
 		}
 
+		if height == 0 {
+			height = app.LastBlockHeight()
+		}
+		if app.queryBoundaryHook != nil {
+			if err := app.queryBoundaryHook(grpcCtx, height); err != nil {
+				return nil, status.Error(codes.Unavailable, err.Error())
+			}
+		}
+
 		// Create the sdk.Context. Passing false as 2nd arg, as we can't
 		// actually support proofs with gRPC right now.
 		sdkCtx, err := app.CreateQueryContextWithCheckHeader(height, false, !skipCheckHeader)

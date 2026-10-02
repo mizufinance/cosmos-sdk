@@ -76,10 +76,11 @@ type BaseApp struct {
 	txDecoder         sdk.TxDecoder // unmarshal []byte into sdk.Tx
 	txEncoder         sdk.TxEncoder // marshal sdk.Tx into []byte
 
-	mempool          mempool.Mempool // application side mempool
-	anteHandler      sdk.AnteHandler // ante handler for fee and auth
-	postHandler      sdk.PostHandler // post handler, optional
-	messageCacheHook MessageCacheHook
+	mempool           mempool.Mempool // application side mempool
+	anteHandler       sdk.AnteHandler // ante handler for fee and auth
+	postHandler       sdk.PostHandler // post handler, optional
+	messageCacheHook  MessageCacheHook
+	queryBoundaryHook func(context.Context, int64) error
 
 	checkTxHandler     sdk.CheckTxHandler             // ABCI CheckTx handler
 	initChainer        sdk.InitChainer                // ABCI InitChain handler

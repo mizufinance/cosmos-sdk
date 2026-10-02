@@ -110,3 +110,26 @@ func TestMessageCacheDisposition(t *testing.T) {
 		})
 	}
 }
+
+func TestPublicQueryBoundaryDoesNotGateInternalSnapshotContexts(t *testing.T) {
+	suite := NewBaseAppSuite(t)
+	_, err := suite.baseApp.InitChain(&abci.RequestInitChain{ConsensusParams: &cmtproto.ConsensusParams{}})
+	require.NoError(t, err)
+	_, err = suite.baseApp.FinalizeBlock(&abci.RequestFinalizeBlock{Height: 1})
+	require.NoError(t, err)
+	_, err = suite.baseApp.Commit()
+	require.NoError(t, err)
+	seen := int64(-1)
+	suite.baseApp.SetQueryBoundaryHook(func(ctx context.Context, h int64) error {
+		seen = h
+		return errors.New("native materialization pending")
+	})
+	// Internal SDK snapshot reservation must remain available before Commit ACK.
+	_, err = suite.baseApp.CreateQueryContext(1, false)
+	require.NoError(t, err)
+	require.EqualValues(t, -1, seen)
+	response, err := suite.baseApp.Query(context.Background(), &abci.RequestQuery{Path: "/store/key1/key", Data: []byte("paired")})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, seen)
+	require.Contains(t, response.Log, "native materialization pending")
+}
